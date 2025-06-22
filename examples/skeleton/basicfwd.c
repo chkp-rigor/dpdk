@@ -11,6 +11,11 @@
 #include <rte_lcore.h>
 #include <rte_mbuf.h>
 
+#include <rte_ether.h>
+#include <rte_ip.h>
+#include <rte_udp.h>
+#include <rte_tcp.h>
+
 #define RX_RING_SIZE 1024
 #define TX_RING_SIZE 1024
 
@@ -112,6 +117,22 @@ port_init(uint16_t port, struct rte_mempool *mbuf_pool)
  * an input port and writing to an output port.
  */
 
+
+static void swap_ether(struct rte_ether_hdr *eth) {
+    struct rte_ether_addr tmp;
+    rte_ether_addr_copy(&eth->src_addr, &tmp);
+    rte_ether_addr_copy(&eth->dst_addr, &eth->src_addr);
+    rte_ether_addr_copy(&tmp, &eth->dst_addr);
+}
+
+static void swap_ipv4(struct rte_ipv4_hdr *ip) {
+    uint32_t tmp = ip->src_addr;
+    ip->src_addr = ip->dst_addr;
+    ip->dst_addr = tmp;
+    ip->hdr_checksum = 0;
+    ip->hdr_checksum = rte_ipv4_cksum(ip);
+}
+
  /* Basic forwarding application lcore. 8< */
 static __rte_noreturn void
 lcore_main(void)
@@ -143,22 +164,30 @@ lcore_main(void)
 
 			/* Get burst of RX packets, from first port of pair. */
 			struct rte_mbuf *bufs[BURST_SIZE];
-			const uint16_t nb_rx = rte_eth_rx_burst(port, 0,
-					bufs, BURST_SIZE);
+			const uint16_t nb_rx = rte_eth_rx_burst(port, 0, bufs, BURST_SIZE);
 
 			if (unlikely(nb_rx == 0))
 				continue;
 
 			/* Send burst of TX packets, to second port of pair. */
-			const uint16_t nb_tx = rte_eth_tx_burst(port ^ 1, 0,
-					bufs, nb_rx);
+			const uint16_t nb_tx = rte_eth_tx_burst(port, 0, bufs, nb_rx);
 
 			/* Free any unsent packets. */
 			if (unlikely(nb_tx < nb_rx)) {
 				uint16_t buf;
 				for (buf = nb_tx; buf < nb_rx; buf++)
+				{
+					struct rte_ether_hdr *eth = rte_pktmbuf_mtod(bufs[buf], struct rte_ether_hdr *);
+					if (eth->ether_type == rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4)) {
+						struct rte_ipv4_hdr *ip = (void *)(eth + 1);
+						swap_ether(eth);
+						swap_ipv4(ip);
+					}
+					
 					rte_pktmbuf_free(bufs[buf]);
+				}
 			}
+
 		}
 	}
 	/* >8 End of loop. */
@@ -185,10 +214,10 @@ main(int argc, char *argv[])
 	argc -= ret;
 	argv += ret;
 
-	/* Check that there is an even number of ports to send/receive on. */
+	/* Check that there is be at least one of ports to send/receive on. */
 	nb_ports = rte_eth_dev_count_avail();
-	if (nb_ports < 2 || (nb_ports & 1))
-		rte_exit(EXIT_FAILURE, "Error: number of ports must be even\n");
+	if (nb_ports >= 1)
+		rte_exit(EXIT_FAILURE, "Error: number of ports must be at least one\n");
 
 	/* Creates a new mempool in memory to hold the mbufs. */
 
