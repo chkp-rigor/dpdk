@@ -154,40 +154,52 @@ lcore_main(void)
 	printf("\nCore %u forwarding packets. [Ctrl+C to quit]\n",
 			rte_lcore_id());
 
+	printf("lets party!!!");
 	/* Main work of application loop. 8< */
 	for (;;) {
-		/*
-		 * Receive packets on a port and forward them on the paired
-		 * port. The mapping is 0 -> 1, 1 -> 0, 2 -> 3, 3 -> 2, etc.
-		 */
 		RTE_ETH_FOREACH_DEV(port) {
-
-			/* Get burst of RX packets, from first port of pair. */
+			/* 1) Declare your burst buffer and nb_rx up front */
 			struct rte_mbuf *bufs[BURST_SIZE];
 			const uint16_t nb_rx = rte_eth_rx_burst(port, 0, bufs, BURST_SIZE);
 
 			if (unlikely(nb_rx == 0))
 				continue;
 
-			/* Send burst of TX packets, to second port of pair. */
-			const uint16_t nb_tx = rte_eth_tx_burst(port, 0, bufs, nb_rx);
+			/* 2) Process each packet: print & swap */
+			for (uint16_t i = 0; i < nb_rx; i++) {
+				struct rte_mbuf *m = bufs[i];
+				struct rte_ether_hdr *eth = rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
+				if (eth->ether_type == rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4)) {
+					struct rte_ipv4_hdr *ip = (void *)(eth + 1);
 
-			/* Free any unsent packets. */
-			if (unlikely(nb_tx < nb_rx)) {
-				uint16_t buf;
-				for (buf = nb_tx; buf < nb_rx; buf++)
-				{
-					struct rte_ether_hdr *eth = rte_pktmbuf_mtod(bufs[buf], struct rte_ether_hdr *);
-					if (eth->ether_type == rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4)) {
-						struct rte_ipv4_hdr *ip = (void *)(eth + 1);
-						swap_ether(eth);
-						swap_ipv4(ip);
+					/* Print IPs & ports */
+					{
+						struct in_addr src = { .s_addr = ip->src_addr };
+						struct in_addr dst = { .s_addr = ip->dst_addr };
+						/* assume UDP for simplicity; adapt if you need TCP */
+						struct rte_udp_hdr *udp = (void *)((char*)ip + (ip->version_ihl & 0x0f)*4);
+						printf("IP %s:%u → %s:%u\n",
+							inet_ntoa(src),
+							rte_be_to_cpu_16(udp->src_port),
+							inet_ntoa(dst),
+							rte_be_to_cpu_16(udp->dst_port));
 					}
-					
-					rte_pktmbuf_free(bufs[buf]);
+
+					/* Swap MAC and IP headers */
+					swap_ether(eth);
+					swap_ipv4(ip);
+					printf("boom!");
 				}
 			}
 
+			/* 3) Transmit the processed burst on the same port */
+			const uint16_t nb_tx = rte_eth_tx_burst(port, 0, bufs, nb_rx);
+
+			/* 4) Free any packets that failed to send */
+			if (unlikely(nb_tx < nb_rx)) {
+				for (uint16_t i = nb_tx; i < nb_rx; i++)
+					rte_pktmbuf_free(bufs[i]);
+			}
 		}
 	}
 	/* >8 End of loop. */
