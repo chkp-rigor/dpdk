@@ -15,6 +15,7 @@
 #include <rte_ip.h>
 #include <rte_udp.h>
 #include <rte_tcp.h>
+#include <rte_arp.h>
 
 #define RX_RING_SIZE 1024
 #define TX_RING_SIZE 1024
@@ -125,14 +126,6 @@ static void swap_ether(struct rte_ether_hdr *eth) {
     rte_ether_addr_copy(&tmp, &eth->dst_addr);
 }
 
-static void swap_ipv4(struct rte_ipv4_hdr *ip) {
-    uint32_t tmp = ip->src_addr;
-    ip->src_addr = ip->dst_addr;
-    ip->dst_addr = tmp;
-    ip->hdr_checksum = 0;
-    ip->hdr_checksum = rte_ipv4_cksum(ip);
-}
-
  /* Basic forwarding application lcore. 8< */
 static __rte_noreturn void
 lcore_main(void)
@@ -154,54 +147,142 @@ lcore_main(void)
 	printf("\nCore %u forwarding packets. [Ctrl+C to quit]\n",
 			rte_lcore_id());
 
-	printf("lets party!!!");
+	printf("\nlets party!!!\n");
 	/* Main work of application loop. 8< */
-	for (;;) {
+		for (;;) {
 		RTE_ETH_FOREACH_DEV(port) {
-			/* 1) Declare your burst buffer and nb_rx up front */
 			struct rte_mbuf *bufs[BURST_SIZE];
-			const uint16_t nb_rx = rte_eth_rx_burst(port, 0, bufs, BURST_SIZE);
+			uint16_t nb_rx = rte_eth_rx_burst(port, 0, bufs, BURST_SIZE);
+			if (unlikely(nb_rx == 0)) continue;
 
-			if (unlikely(nb_rx == 0))
-				continue;
-
-			/* 2) Process each packet: print & swap */
 			for (uint16_t i = 0; i < nb_rx; i++) {
 				struct rte_mbuf *m = bufs[i];
 				struct rte_ether_hdr *eth = rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
-				if (eth->ether_type == rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4)) {
-					struct rte_ipv4_hdr *ip = (void *)(eth + 1);
 
-					/* Print IPs & ports */
-					{
-						struct in_addr src = { .s_addr = ip->src_addr };
-						struct in_addr dst = { .s_addr = ip->dst_addr };
-						/* assume UDP for simplicity; adapt if you need TCP */
-						struct rte_udp_hdr *udp = (void *)((char*)ip + (ip->version_ihl & 0x0f)*4);
-						printf("IP %s:%u → %s:%u\n",
-							inet_ntoa(src),
-							rte_be_to_cpu_16(udp->src_port),
-							inet_ntoa(dst),
-							rte_be_to_cpu_16(udp->dst_port));
+				// ARP
+				/* inside your packet loop, before IPv4 handling */
+				if (eth->ether_type == rte_cpu_to_be_16(RTE_ETHER_TYPE_ARP)) {
+					struct rte_arp_hdr *arp =
+						rte_pktmbuf_mtod_offset(m, struct rte_arp_hdr *,
+												sizeof(struct rte_ether_hdr));
+
+					if (arp->arp_opcode == rte_cpu_to_be_16(RTE_ARP_OP_REQUEST)) {
+						struct in_addr req_ip = {
+							.s_addr = arp->arp_data.arp_tip
+						};
+						printf("ARP request for %s\n", inet_ntoa(req_ip));
+
+						/* 1) Swap Ethernet MACs */
+						struct rte_ether_addr tmp_mac;
+						rte_ether_addr_copy(&eth->src_addr, &tmp_mac);
+						rte_ether_addr_copy(&eth->dst_addr, &eth->src_addr);
+						rte_ether_addr_copy(&tmp_mac, &eth->dst_addr);
+
+						/* 2) Build ARP reply */
+						arp->arp_opcode = rte_cpu_to_be_16(RTE_ARP_OP_REPLY);
+
+						/* Swap and set ARP MAC fields */
+						rte_ether_addr_copy(&arp->arp_data.arp_sha,
+											&arp->arp_data.arp_tha);
+						struct rte_ether_addr my_mac;
+						rte_eth_macaddr_get(port, &my_mac);
+						rte_ether_addr_copy(&my_mac, &arp->arp_data.arp_sha);
+
+						/* Swap and set ARP IP fields */
+						uint32_t req_proto = arp->arp_data.arp_sip;
+						arp->arp_data.arp_sip = rte_cpu_to_be_32((172<<24)|(16<<16)|(0<<8)|1);
+						arp->arp_data.arp_tip = req_proto;
+
+						/* 3) Transmit the ARP reply and continue */
+						rte_eth_tx_burst(port, 0, &m, 1);
+						continue;
 					}
+				}
+				// ARP end	
 
-					/* Swap MAC and IP headers */
+				// Drop non-IPv4 packets
+				if (eth->ether_type != rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4)) {
+					printf("Dropping packet: non-IPv4 ether_type 0x%04x\n",
+						eth->ether_type);
+					rte_pktmbuf_free(m);
+					continue;
+				}
+
+				// Parse IPv4 header
+				struct rte_ipv4_hdr *ip = (void *)(eth + 1);
+				struct in_addr src_addr = { .s_addr = ip->src_addr };
+				struct in_addr dst_addr = { .s_addr = ip->dst_addr };
+
+				// Handle UDP and TCP
+				if (ip->next_proto_id == IPPROTO_UDP) {
+					struct rte_udp_hdr *udp = (void *)((char*)ip + (ip->ihl & 0x0f)*4);
+					uint16_t src_port = rte_be_to_cpu_16(udp->src_port);
+					uint16_t dst_port = rte_be_to_cpu_16(udp->dst_port);
+					printf("Rx IPv4 UDP %s:%u → %s:%u\n",
+						inet_ntoa(src_addr), src_port,
+						inet_ntoa(dst_addr), dst_port);
+
+					// Swap MAC, IP, ports
 					swap_ether(eth);
-					swap_ipv4(ip);
-					printf("boom!");
+					uint32_t tmp_ip = ip->src_addr;
+					ip->src_addr = ip->dst_addr;
+					ip->dst_addr = tmp_ip;
+					// Recompute IPv4 checksum
+					ip->hdr_checksum = 0;
+					ip->hdr_checksum = rte_ipv4_cksum(ip);
+					// Swap UDP ports
+					udp->src_port = rte_cpu_to_be_16(dst_port);
+					udp->dst_port = rte_cpu_to_be_16(src_port);
+
+					// Print packet as sent
+					struct in_addr new_src = { .s_addr = ip->src_addr };
+					struct in_addr new_dst = { .s_addr = ip->dst_addr };
+					printf("Tx IPv4 UDP %s:%u → %s:%u\n",
+						inet_ntoa(new_src), rte_be_to_cpu_16(udp->src_port),
+						inet_ntoa(new_dst), rte_be_to_cpu_16(udp->dst_port));
+
+				} else if (ip->next_proto_id == IPPROTO_TCP) {
+					struct rte_tcp_hdr *tcp = (void *)((char*)ip + (ip->ihl & 0x0f)*4);
+					uint16_t src_port = rte_be_to_cpu_16(tcp->src_port);
+					uint16_t dst_port = rte_be_to_cpu_16(tcp->dst_port);
+					printf("Rx IPv4 TCP %s:%u → %s:%u\n",
+						inet_ntoa(src_addr), src_port,
+						inet_ntoa(dst_addr), dst_port);
+
+					// Swap MAC, IP, ports
+					swap_ether(eth);
+					uint32_t tmp_ip = ip->src_addr;
+					ip->src_addr = ip->dst_addr;
+					ip->dst_addr = tmp_ip;
+					ip->hdr_checksum = 0;
+					ip->hdr_checksum = rte_ipv4_cksum(ip);
+					// Swap TCP ports
+					tcp->src_port = rte_cpu_to_be_16(dst_port);
+					tcp->dst_port = rte_cpu_to_be_16(src_port);
+
+					struct in_addr new_src = { .s_addr = ip->src_addr };
+					struct in_addr new_dst = { .s_addr = ip->dst_addr };
+					printf("Tx IPv4 TCP %s:%u → %s:%u\n",
+						inet_ntoa(new_src), rte_be_to_cpu_16(tcp->src_port),
+						inet_ntoa(new_dst), rte_be_to_cpu_16(tcp->dst_port));
+				} else {
+					// Other IPv4 protocols can be handled or dropped
+					printf("Dropping non-TCP/UDP IPv4 packet (proto %u)\n",
+						ip->next_proto_id);
+					rte_pktmbuf_free(m);
+					continue;
 				}
 			}
 
-			/* 3) Transmit the processed burst on the same port */
-			const uint16_t nb_tx = rte_eth_tx_burst(port, 0, bufs, nb_rx);
-
-			/* 4) Free any packets that failed to send */
+			// Transmit all modified packets back out the same port
+			uint16_t nb_tx = rte_eth_tx_burst(port, 0, bufs, nb_rx);
 			if (unlikely(nb_tx < nb_rx)) {
 				for (uint16_t i = nb_tx; i < nb_rx; i++)
 					rte_pktmbuf_free(bufs[i]);
 			}
 		}
 	}
+
 	/* >8 End of loop. */
 }
 /* >8 End Basic forwarding application lcore. */
