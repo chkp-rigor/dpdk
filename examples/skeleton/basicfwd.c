@@ -214,10 +214,11 @@ lcore_main(void)
 				struct rte_ipv4_hdr *ip = (void *)(eth + 1);
 				struct in_addr src_addr = { .s_addr = ip->src_addr };
 				struct in_addr dst_addr = { .s_addr = ip->dst_addr };
+				uint8_t ihl = ip->version_ihl & 0x0f;    // low 4 bits hold header length in 32‑bit words
 
 				// Handle UDP and TCP
 				if (ip->next_proto_id == IPPROTO_UDP) {
-					struct rte_udp_hdr *udp = (void *)((char*)ip + (ip->ihl & 0x0f)*4);
+					struct rte_udp_hdr *udp = (void *)((char*)ip + ihl * sizeof(uint32_t));
 					uint16_t src_port = rte_be_to_cpu_16(udp->src_port);
 					uint16_t dst_port = rte_be_to_cpu_16(udp->dst_port);
 					printf("Rx IPv4 UDP %s:%u → %s:%u\n",
@@ -246,7 +247,7 @@ lcore_main(void)
 						inet_ntoa(new_dst), rte_be_to_cpu_16(udp->dst_port));
 
 				} else if (ip->next_proto_id == IPPROTO_TCP) {
-					struct rte_tcp_hdr *tcp = (void *)((char*)ip + (ip->ihl & 0x0f)*4);
+					struct rte_tcp_hdr *tcp = (void *)((char*)ip + ihl * sizeof(uint32_t));
 					uint16_t src_port = rte_be_to_cpu_16(tcp->src_port);
 					uint16_t dst_port = rte_be_to_cpu_16(tcp->dst_port);
 					printf("Rx IPv4 TCP %s:%u → %s:%u\n",
