@@ -24,6 +24,8 @@
 #define MBUF_CACHE_SIZE 250
 #define BURST_SIZE 32
 
+static bool no_swap_ports = false;
+
 /* basicfwd.c: Basic DPDK skeleton forwarding example. */
 
 /*
@@ -231,8 +233,10 @@ lcore_main(void)
 					ip->hdr_checksum = 0;
 					ip->hdr_checksum = rte_ipv4_cksum(ip);
 					// Swap UDP ports
-					udp->src_port = rte_cpu_to_be_16(dst_port);
-					udp->dst_port = rte_cpu_to_be_16(src_port);
+					if (!no_swap_ports) { // to disable ports swaping use NO_SWAP_PORTS=1
+						udp->src_port = rte_cpu_to_be_16(dst_port);
+						udp->dst_port = rte_cpu_to_be_16(src_port);
+					}
 
 					// Print packet as sent
 					struct in_addr new_src = { .s_addr = ip->src_addr };
@@ -331,6 +335,13 @@ main(int argc, char *argv[])
 
 	if (rte_lcore_count() > 1)
 		printf("\nWARNING: Too many lcores enabled. Only 1 used.\n");
+
+	/* Read the environment variable at startup */
+    char *env = getenv("NO_SWAP_PORTS");
+    if (env && strcmp(env, "1") == 0){
+		no_swap_ports = true;
+		printf("\nNOTICE: No Ports swaping mode is active.\n");
+	}
 
 	/* Call lcore_main on the main core only. Called on single lcore. 8< */
 	lcore_main();
