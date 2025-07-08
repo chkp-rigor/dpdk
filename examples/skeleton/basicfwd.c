@@ -25,6 +25,8 @@
 #define BURST_SIZE 32
 
 static bool no_swap_ports = false;
+static int use_fixed_src_ip = 0;
+static uint32_t fixed_src_ip = 0;
 
 /* basicfwd.c: Basic DPDK skeleton forwarding example. */
 
@@ -230,6 +232,11 @@ lcore_main(void)
 					uint32_t tmp_ip = ip->src_addr;
 					ip->src_addr = ip->dst_addr;
 					ip->dst_addr = tmp_ip;
+
+					if (use_fixed_src_ip) {
+						ip->src_addr = fixed_src_ip;
+					} 
+
 					// Recompute IPv4 checksum
 					ip->hdr_checksum = 0;
 					ip->hdr_checksum = rte_ipv4_cksum(ip);
@@ -333,15 +340,30 @@ main(int argc, char *argv[])
 			rte_exit(EXIT_FAILURE, "Cannot init port %"PRIu16 "\n",
 					portid);
 	/* >8 End of initializing all ports. */
-
+	
 	if (rte_lcore_count() > 1)
-		printf("\nWARNING: Too many lcores enabled. Only 1 used.\n");
-
+	printf("\nWARNING: Too many lcores enabled. Only 1 used.\n");
+	
 	/* Read the environment variable at startup */
     char *env = getenv("NO_SWAP_PORTS");
     if (env && strcmp(env, "1") == 0){
 		no_swap_ports = true;
 		printf("\nNOTICE: No Ports swaping mode is active.\n");
+	}
+	/* Check for static ip source configuration*/
+	env = NULL;
+	env = getenv("FIX_SOURCE");
+	if (env) {
+		printf("test!!!!!!!!!!!");
+		struct in_addr addr;
+		if (inet_pton(AF_INET, env, &addr) == 1) {
+			fixed_src_ip = rte_cpu_to_be_32(addr.s_addr);
+			use_fixed_src_ip = 1;
+			printf("Using fixed source IP: %s\n", env);
+		} else {
+			fprintf(stderr, "Invalid FIX_SOURCE IP address: %s\n", env);
+			exit(1);
+		}
 	}
 
 	/* Call lcore_main on the main core only. Called on single lcore. 8< */
