@@ -28,6 +28,10 @@ static bool no_swap_ports = false;
 static int use_fixed_src_ip = 0;
 static uint32_t fixed_src_ip = 0;
 
+static int  use_fixed_src_port = 0;
+static uint16_t fixed_src_port = 0;
+
+
 /* basicfwd.c: Basic DPDK skeleton forwarding example. */
 
 /*
@@ -246,6 +250,11 @@ lcore_main(void)
 						udp->dst_port = rte_cpu_to_be_16(src_port);
 					}
 
+					if (use_fixed_src_port) {
+						// FIX_SRC_PORT is set 
+						udp->src_port = rte_cpu_to_be_16(fixed_src_port);
+					}
+
 					// Print packet as sent
 					struct in_addr new_src = { .s_addr = ip->src_addr };
 					struct in_addr new_dst = { .s_addr = ip->dst_addr };
@@ -352,9 +361,8 @@ main(int argc, char *argv[])
 	}
 	/* Check for static ip source configuration*/
 	env = NULL;
-	env = getenv("FIX_SOURCE");
+	env = getenv("FIX_SRC_IP");
 	if (env) {
-		printf("test!!!!!!!!!!!");
 		struct in_addr addr;
 		if (inet_pton(AF_INET, env, &addr) == 1) {
 			fixed_src_ip = rte_cpu_to_be_32(addr.s_addr);
@@ -365,6 +373,21 @@ main(int argc, char *argv[])
 			exit(1);
 		}
 	}
+	
+	env = getenv("FIX_SRC_PORT");
+    if (env) {
+        long p = strtol(env, NULL, 10);
+        if (p > 0 && p <= 65535) {
+            fixed_src_port   = (uint16_t)p;
+            use_fixed_src_port = 1;
+            printf("Using fixed source port: %u\n", fixed_src_port);
+        } else {
+            fprintf(stderr,
+                "Invalid FIX_SRC_PORT value: %s (must be 1–65535)\n", env);
+            exit(1);
+        }
+    }
+
 
 	/* Call lcore_main on the main core only. Called on single lcore. 8< */
 	lcore_main();
