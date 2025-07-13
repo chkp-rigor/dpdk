@@ -27,6 +27,8 @@
 static bool no_swap_ports = false;
 static int use_fixed_src_ip = 0;
 static uint32_t fixed_src_ip = 0;
+static int use_fixed_dst_ip = 0;
+static uint32_t fixed_dst_ip = 0;
 
 static int  use_fixed_src_port = 0;
 static uint16_t fixed_src_port = 0;
@@ -240,7 +242,9 @@ lcore_main(void)
 					if (use_fixed_src_ip) {
 						ip->src_addr = fixed_src_ip;
 					} 
-
+					if (use_fixed_dst_ip) {
+						ip->dst_addr = fixed_dst_ip;
+					} 
 					// Recompute IPv4 checksum
 					ip->hdr_checksum = 0;
 					ip->hdr_checksum = rte_ipv4_cksum(ip);
@@ -369,7 +373,20 @@ main(int argc, char *argv[])
 			use_fixed_src_ip = 1;
 			printf("Using fixed source IP: %s\n", env);
 		} else {
-			fprintf(stderr, "Invalid FIX_SOURCE IP address: %s\n", env);
+			fprintf(stderr, "Invalid FIX_SRC_IP address: %s\n", env);
+			exit(1);
+		}
+	}
+
+	env = getenv("FIX_DST_IP");
+	if (env) {
+		struct in_addr addr;
+		if (inet_pton(AF_INET, env, &addr) == 1) {
+			fixed_dst_ip = rte_cpu_to_be_32(addr.s_addr);
+			use_fixed_dst_ip = 1;
+			printf("Using fixed destenation IP: %s\n", env);
+		} else {
+			fprintf(stderr, "Invalid FIX_DST_IP address: %s\n", env);
 			exit(1);
 		}
 	}
