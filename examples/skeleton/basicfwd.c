@@ -201,7 +201,8 @@ lcore_main(void)
 
 						/* Swap and set ARP IP fields */
 						uint32_t req_proto = arp->arp_data.arp_sip;
-						arp->arp_data.arp_sip = rte_cpu_to_be_32((172<<24)|(16<<16)|(0<<8)|1);
+						// arp->arp_data.arp_sip = rte_cpu_to_be_32((172<<24)|(16<<16)|(0<<8)|3);
+						arp->arp_data.arp_sip = arp->arp_data.arp_tip;
 						arp->arp_data.arp_tip = req_proto;
 
 						/* 3) Transmit the ARP reply and continue */
