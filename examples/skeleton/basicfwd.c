@@ -16,6 +16,7 @@
 #include <rte_udp.h>
 #include <rte_tcp.h>
 #include <rte_arp.h>
+#include <rte_icmp.h>
 
 #define RX_RING_SIZE 1024
 #define TX_RING_SIZE 1024
@@ -224,6 +225,37 @@ lcore_main(void)
 				struct in_addr dst_addr = { .s_addr = ip->dst_addr };
 				uint8_t ihl = ip->version_ihl & 0x0f;    // low 4 bits hold header length in 32‑bit words
 
+
+				if (ip->next_proto_id == IPPROTO_ICMP) {
+					uint8_t ihl = ip->version_ihl & 0x0f;
+					struct rte_icmp_hdr *icmp = (void *)((char*)ip + ihl * sizeof(uint32_t));
+
+					if (icmp->icmp_type == RTE_ICMP_TYPE_ECHO_REQUEST) {
+						printf("ICMP echo request from %s\n", inet_ntoa(src_addr));
+
+						// 1) Swap MACs
+						swap_ether(eth);
+
+						// 2) Swap IPs & recalc checksum
+						uint32_t tmp_ip = ip->src_addr;
+						ip->src_addr = ip->dst_addr;
+						ip->dst_addr = tmp_ip;
+						ip->hdr_checksum = 0;
+						ip->hdr_checksum = rte_ipv4_cksum(ip);
+
+						// 3) Build ICMP reply
+						icmp->icmp_type = RTE_ICMP_TYPE_ECHO_REPLY;
+						icmp->icmp_cksum = 0;
+
+						// Calculate checksum over ICMP header + payload
+						uint16_t icmp_len = rte_be_to_cpu_16(ip->total_length) - (ihl * 4);
+						icmp->icmp_cksum = rte_raw_cksum(icmp, icmp_len);
+
+						// 4) Transmit back
+						rte_eth_tx_burst(port, 0, &m, 1);
+						continue;
+					}
+				}
 				// Handle UDP and TCP
 				if (ip->next_proto_id == IPPROTO_UDP) {
 					struct rte_udp_hdr *udp = (void *)((char*)ip + ihl * sizeof(uint32_t));
