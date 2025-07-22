@@ -278,19 +278,23 @@ lcore_main(void)
 					if (use_fixed_dst_ip) {
 						ip->dst_addr = fixed_dst_ip;
 					} 
-					// Recompute IPv4 checksum
-					ip->hdr_checksum = 0;
-					ip->hdr_checksum = rte_ipv4_cksum(ip);
 					// Swap UDP ports
 					if (!no_swap_ports) { // to disable ports swaping use NO_SWAP_PORTS=1
 						udp->src_port = rte_cpu_to_be_16(dst_port);
 						udp->dst_port = rte_cpu_to_be_16(src_port);
 					}
-
+					
 					if (use_fixed_src_port) {
 						// FIX_SRC_PORT is set 
 						udp->src_port = rte_cpu_to_be_16(fixed_src_port);
 					}
+
+					// Recompute IPv4 checksum
+					udp->dgram_cksum = 0;
+					udp->dgram_cksum = rte_ipv4_udptcp_cksum(ip, udp);
+
+					ip->hdr_checksum = 0;
+					ip->hdr_checksum = rte_ipv4_cksum(ip);
 
 					// Print packet as sent
 					struct in_addr new_src = { .s_addr = ip->src_addr };
@@ -312,14 +316,18 @@ lcore_main(void)
 					uint32_t tmp_ip = ip->src_addr;
 					ip->src_addr = ip->dst_addr;
 					ip->dst_addr = tmp_ip;
-					ip->hdr_checksum = 0;
-					ip->hdr_checksum = rte_ipv4_cksum(ip);
 					// Swap TCP ports
 					tcp->src_port = rte_cpu_to_be_16(dst_port);
 					tcp->dst_port = rte_cpu_to_be_16(src_port);
-
+					
 					struct in_addr new_src = { .s_addr = ip->src_addr };
 					struct in_addr new_dst = { .s_addr = ip->dst_addr };
+					
+					tcp->cksum = 0;
+					tcp->cksum = rte_ipv4_udptcp_cksum(ip, tcp);
+					ip->hdr_checksum = 0;
+					ip->hdr_checksum = rte_ipv4_cksum(ip);
+					
 					printf("Tx IPv4 TCP %s:%u → %s:%u\n",
 						inet_ntoa(new_src), rte_be_to_cpu_16(tcp->src_port),
 						inet_ntoa(new_dst), rte_be_to_cpu_16(tcp->dst_port));
