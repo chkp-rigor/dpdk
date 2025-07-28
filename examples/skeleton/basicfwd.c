@@ -222,16 +222,15 @@ lcore_main(void)
 
 				// Parse IPv4 header
 				struct rte_ipv4_hdr *ip = (void *)(eth + 1);
-				struct in_addr src_addr = { .s_addr = ip->src_addr };
-				struct in_addr dst_addr = { .s_addr = ip->dst_addr };
 				uint8_t ihl = ip->version_ihl & 0x0f;    // low 4 bits hold header length in 32‑bit words
-
 
 				if (ip->next_proto_id == IPPROTO_ICMP) {
 					uint8_t ihl = ip->version_ihl & 0x0f;
 					struct rte_icmp_hdr *icmp = (void *)((char*)ip + ihl * sizeof(uint32_t));
 
 					if (icmp->icmp_type == RTE_ICMP_TYPE_ECHO_REQUEST) {
+						// For ICMP, we still need src_addr for this one print
+						struct in_addr src_addr = { .s_addr = ip->src_addr };
 						printf("ICMP echo request from %s\n", inet_ntoa(src_addr));
 
 						// 1) Swap MACs
@@ -262,11 +261,17 @@ lcore_main(void)
 					struct rte_udp_hdr *udp = (void *)((char*)ip + ihl * sizeof(uint32_t));
 					uint16_t src_port = rte_be_to_cpu_16(udp->src_port);
 					uint16_t dst_port = rte_be_to_cpu_16(udp->dst_port);
+					
+					// Create separate strings for source and destination IPs
+					char src_ip_str[INET_ADDRSTRLEN];
+					char dst_ip_str[INET_ADDRSTRLEN];
+					inet_ntop(AF_INET, &ip->src_addr, src_ip_str, INET_ADDRSTRLEN);
+					inet_ntop(AF_INET, &ip->dst_addr, dst_ip_str, INET_ADDRSTRLEN);
+					
 					printf("Rx IPv4 UDP %s:%u → %s:%u\n",
-						inet_ntoa(src_addr), src_port,
-						inet_ntoa(dst_addr), dst_port);
+						src_ip_str, src_port, dst_ip_str, dst_port);
 
-					// Swap MAC, IP, ports
+					// Now do all the swapping/modifications
 					swap_ether(eth);
 					uint32_t tmp_ip = ip->src_addr;
 					ip->src_addr = ip->dst_addr;
@@ -278,59 +283,72 @@ lcore_main(void)
 					if (use_fixed_dst_ip) {
 						ip->dst_addr = fixed_dst_ip;
 					} 
+					
 					// Swap UDP ports
-					if (!no_swap_ports) { // to disable ports swaping use NO_SWAP_PORTS=1
+					if (!no_swap_ports) {
 						udp->src_port = rte_cpu_to_be_16(dst_port);
 						udp->dst_port = rte_cpu_to_be_16(src_port);
 					}
 					
 					if (use_fixed_src_port) {
-						// FIX_SRC_PORT is set 
 						udp->src_port = rte_cpu_to_be_16(fixed_src_port);
 					}
 
-					// Recompute IPv4 checksum
+					// Recompute checksums
 					udp->dgram_cksum = 0;
 					udp->dgram_cksum = rte_ipv4_udptcp_cksum(ip, udp);
-
 					ip->hdr_checksum = 0;
 					ip->hdr_checksum = rte_ipv4_cksum(ip);
 
-					// Print packet as sent
-					struct in_addr new_src = { .s_addr = ip->src_addr };
-					struct in_addr new_dst = { .s_addr = ip->dst_addr };
+					// Print TRANSMITTED packet AFTER all modifications
+					char new_src_str[INET_ADDRSTRLEN];
+					char new_dst_str[INET_ADDRSTRLEN];
+					inet_ntop(AF_INET, &ip->src_addr, new_src_str, INET_ADDRSTRLEN);
+					inet_ntop(AF_INET, &ip->dst_addr, new_dst_str, INET_ADDRSTRLEN);
+					
 					printf("Tx IPv4 UDP %s:%u → %s:%u\n",
-						inet_ntoa(new_src), rte_be_to_cpu_16(udp->src_port),
-						inet_ntoa(new_dst), rte_be_to_cpu_16(udp->dst_port));
+						new_src_str, rte_be_to_cpu_16(udp->src_port),
+						new_dst_str, rte_be_to_cpu_16(udp->dst_port));
 
 				} else if (ip->next_proto_id == IPPROTO_TCP) {
 					struct rte_tcp_hdr *tcp = (void *)((char*)ip + ihl * sizeof(uint32_t));
 					uint16_t src_port = rte_be_to_cpu_16(tcp->src_port);
 					uint16_t dst_port = rte_be_to_cpu_16(tcp->dst_port);
+					
+					// Create separate strings for source and destination IPs
+					char src_ip_str[INET_ADDRSTRLEN];
+					char dst_ip_str[INET_ADDRSTRLEN];
+					inet_ntop(AF_INET, &ip->src_addr, src_ip_str, INET_ADDRSTRLEN);
+					inet_ntop(AF_INET, &ip->dst_addr, dst_ip_str, INET_ADDRSTRLEN);
+					
 					printf("Rx IPv4 TCP %s:%u → %s:%u\n",
-						inet_ntoa(src_addr), src_port,
-						inet_ntoa(dst_addr), dst_port);
+						src_ip_str, src_port, dst_ip_str, dst_port);
 
-					// Swap MAC, IP, ports
+					// Now do all the swapping/modifications
 					swap_ether(eth);
 					uint32_t tmp_ip = ip->src_addr;
 					ip->src_addr = ip->dst_addr;
 					ip->dst_addr = tmp_ip;
+					
 					// Swap TCP ports
 					tcp->src_port = rte_cpu_to_be_16(dst_port);
 					tcp->dst_port = rte_cpu_to_be_16(src_port);
 					
-					struct in_addr new_src = { .s_addr = ip->src_addr };
-					struct in_addr new_dst = { .s_addr = ip->dst_addr };
-					
+					// Recompute checksums
 					tcp->cksum = 0;
 					tcp->cksum = rte_ipv4_udptcp_cksum(ip, tcp);
 					ip->hdr_checksum = 0;
 					ip->hdr_checksum = rte_ipv4_cksum(ip);
 					
+					// Print TRANSMITTED packet AFTER all modifications
+					char new_src_str[INET_ADDRSTRLEN];
+					char new_dst_str[INET_ADDRSTRLEN];
+					inet_ntop(AF_INET, &ip->src_addr, new_src_str, INET_ADDRSTRLEN);
+					inet_ntop(AF_INET, &ip->dst_addr, new_dst_str, INET_ADDRSTRLEN);
+					
 					printf("Tx IPv4 TCP %s:%u → %s:%u\n",
-						inet_ntoa(new_src), rte_be_to_cpu_16(tcp->src_port),
-						inet_ntoa(new_dst), rte_be_to_cpu_16(tcp->dst_port));
+						new_src_str, rte_be_to_cpu_16(tcp->src_port),
+						new_dst_str, rte_be_to_cpu_16(tcp->dst_port));
 				} else {
 					// Other IPv4 protocols can be handled or dropped
 					printf("Dropping non-TCP/UDP IPv4 packet (proto %u)\n",
@@ -353,6 +371,37 @@ lcore_main(void)
 }
 /* >8 End Basic forwarding application lcore. */
 
+static void print_welcome_message(void)
+{
+    printf("\n");
+    printf("=========================================\n");
+    printf("     DPDK Network Packet Reflector      \n");
+    printf("=========================================\n");
+    printf("\n");
+    printf("This application reflects network packets back to the sender.\n");
+    printf("Supported protocols: ARP, ICMP, UDP, TCP\n");
+    printf("\n");
+    printf("Configuration via Environment Variables:\n");
+    printf("----------------------------------------\n");
+    printf("NO_SWAP_PORTS=1    - Disable port swapping (keep original ports)\n");
+    printf("FIX_SRC_IP=x.x.x.x - Use fixed source IP address\n");
+    printf("FIX_DST_IP=x.x.x.x - Use fixed destination IP address\n");
+    printf("FIX_SRC_PORT=N     - Use fixed source port (1-65535)\n");
+    printf("\n");
+    printf("Examples:\n");
+    printf("  NO_SWAP_PORTS=1 FIX_SRC_IP=192.168.1.100 ./your_app\n");
+    printf("  FIX_DST_IP=10.0.0.1 FIX_SRC_PORT=8080 ./your_app\n");
+    printf("\n");
+    printf("Packet Flow:\n");
+    printf("  ARP Requests  -> ARP Replies\n");
+    printf("  ICMP Pings    -> ICMP Pong\n");
+    printf("  UDP/TCP       -> Reflected with swapped addresses/ports\n");
+    printf("\n");
+    printf("Press Ctrl+C to stop the application.\n");
+    printf("=========================================\n");
+    printf("\n");
+}
+
 /*
  * The main function, which does initialization and calls the per-lcore
  * functions.
@@ -363,6 +412,9 @@ main(int argc, char *argv[])
 	struct rte_mempool *mbuf_pool;
 	unsigned nb_ports;
 	uint16_t portid;
+    
+
+	print_welcome_message();
 
 	/* Initializion the Environment Abstraction Layer (EAL). 8< */
 	int ret = rte_eal_init(argc, argv);
@@ -410,7 +462,7 @@ main(int argc, char *argv[])
 	if (env) {
 		struct in_addr addr;
 		if (inet_pton(AF_INET, env, &addr) == 1) {
-			fixed_src_ip = rte_cpu_to_be_32(addr.s_addr);
+			fixed_src_ip = addr.s_addr;
 			use_fixed_src_ip = 1;
 			printf("Using fixed source IP: %s\n", env);
 		} else {
@@ -423,7 +475,7 @@ main(int argc, char *argv[])
 	if (env) {
 		struct in_addr addr;
 		if (inet_pton(AF_INET, env, &addr) == 1) {
-			fixed_dst_ip = rte_cpu_to_be_32(addr.s_addr);
+			fixed_dst_ip = addr.s_addr;
 			use_fixed_dst_ip = 1;
 			printf("Using fixed destenation IP: %s\n", env);
 		} else {
