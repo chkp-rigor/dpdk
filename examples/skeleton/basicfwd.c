@@ -326,6 +326,38 @@ lcore_main(void)
 					printf("Rx IPv4 TCP %s:%u → %s:%u\n",
 						src_ip_str, src_port, dst_ip_str, dst_port);
 
+					// AWS Gateway health check: respond to SYN on port 80
+					if (dst_port == 80 && (tcp->tcp_flags & RTE_TCP_SYN_FLAG) && !(tcp->tcp_flags & RTE_TCP_ACK_FLAG)) {
+						printf("TCP SYN received on port 80 - handling AWS health check\n");
+						swap_ether(eth);
+						uint32_t tmp_ip = ip->src_addr;
+						ip->src_addr = ip->dst_addr;
+						ip->dst_addr = tmp_ip;
+						tcp->src_port = rte_cpu_to_be_16(dst_port);
+						tcp->dst_port = rte_cpu_to_be_16(src_port);
+						
+						// Set sequence and ack numbers
+						uint32_t seq = rte_be_to_cpu_32(tcp->sent_seq);
+						tcp->sent_seq = rte_cpu_to_be_32(0x1000); // arbitrary initial seq
+						tcp->recv_ack = rte_cpu_to_be_32(seq + 1);
+						
+						// Set flags to SYN+ACK
+						tcp->tcp_flags = RTE_TCP_SYN_FLAG | RTE_TCP_ACK_FLAG;
+						
+						// Window size
+						tcp->rx_win = rte_cpu_to_be_16(65535);
+						
+						// Recompute checksums
+						tcp->cksum = 0;
+						tcp->cksum = rte_ipv4_udptcp_cksum(ip, tcp);
+						ip->hdr_checksum = 0;
+						ip->hdr_checksum = rte_ipv4_cksum(ip);
+						
+						printf("Sent SYN-ACK for AWS health check to %s:%u\n", src_ip_str, src_port);
+						rte_eth_tx_burst(port, 0, &m, 1);
+						continue; // Skip normal packet processing
+					}
+
 					// Now do all the swapping/modifications
 					swap_ether(eth);
 					uint32_t tmp_ip = ip->src_addr;

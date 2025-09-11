@@ -1,11 +1,136 @@
-DPDK is a set of libraries and drivers for fast packet processing.
-It supports many processor architectures and both FreeBSD and Linux.
+# DPDK Network Packet Reflector
 
-The DPDK uses the Open Source BSD-3-Clause license for the core libraries
-and drivers. The kernel components are GPL-2.0 licensed.
+This is a high-performance packet reflector built on [DPDK (Data Plane Development Kit)](https://www.dpdk.org/). It receives packets on available NICs and reflects them back to the sender. It supports the following protocols:
 
-Please check the doc directory for release notes,
-API documentation, and sample application information.
+- **ARP**: Sends ARP replies to ARP requests.
+- **ICMP**: Responds to ICMP Echo Requests (Ping) with Echo Replies.
+- **UDP / TCP**: Reflects back packets with swapped MAC, IP, and port addresses.
 
-For questions and usage discussions, subscribe to: users@dpdk.org
-Report bugs and issues to the development mailing list: dev@dpdk.org
+## Features
+
+- Promiscuous mode port initialization
+- Efficient zero-copy forwarding using DPDK
+- Protocol parsing and modification for ARP, ICMP, UDP, and TCP
+- Configurable fixed source/destination IPs and ports
+- Optional disabling of port swapping
+
+## Environment Configuration
+
+You can configure runtime behavior via environment variables:
+
+| Variable         | Description                                  | Example                        |
+|------------------|----------------------------------------------|--------------------------------|
+| `NO_SWAP_PORTS`  | If set to `1`, disables swapping of ports    | `NO_SWAP_PORTS=1`              |
+| `FIX_SRC_IP`     | Fixed source IP address (IPv4 dotted format) | `FIX_SRC_IP=192.168.1.100`     |
+| `FIX_DST_IP`     | Fixed destination IP address                 | `FIX_DST_IP=10.0.0.1`          |
+| `FIX_SRC_PORT`   | Fixed source port (1–65535)                  | `FIX_SRC_PORT=8080`            |
+| `NO_SWAP_IPS`    | If set to `1`, disables swapping of IPs      | `NO_SWAP_IPS=1`                |  
+
+### Example Usage
+
+```bash
+# Reflect packets with fixed source IP
+FIX_SRC_IP=192.168.1.100 ./dpdk_reflector
+
+# Disable port swapping and use fixed port
+NO_SWAP_PORTS=1 FIX_SRC_PORT=12345 ./dpdk_reflector
+```
+
+## Build Instructions
+
+This application requires DPDK to be installed on your system.
+
+### Dependencies
+
+- GCC or Clang
+- Linux with hugepages support
+
+## Compilation
+
+This project uses a custom DPDK fork with `meson` and `ninja` to build the application.
+
+### Requirements (Ubuntu-based)
+
+Install the following dependencies:
+
+```bash
+sudo apt update
+sudo apt install -y \
+    git \
+    meson \
+    ninja-build \
+    libnuma-dev \
+    python3-pyelftools \
+    build-essential \
+    ca-certificates \
+    pkg-config \
+    python3
+```
+
+### Build Steps
+
+1. Clone the custom DPDK fork:
+
+```bash
+git clone https://github.com/roikeman/dpdk.git -b froike-exp
+cd dpdk
+```
+
+2. Configure the build with Meson (skeleton example only):
+
+```bash
+meson -Dexamples=skeleton build
+```
+
+3. Build the application:
+
+```bash
+ninja -C build
+```
+
+4. The compiled binary will be located at:
+
+```bash
+build/examples/dpdk-skeleton
+```
+
+You can now run it directly after configuring hugepages and binding NICs as required by DPDK.
+
+## How It Works
+
+The application initializes all available Ethernet (or memif) ports using DPDK, enters a packet processing loop, and:
+
+- Listens for ARP requests and sends back ARP replies.
+- Responds to ICMP Echo Requests with Echo Replies.
+- Reflects UDP and TCP packets with address/port swapping.
+- Optionally modifies source/destination IP and ports based on environment.
+
+Packets are processed in bursts for performance, and checksum recalculations are handled for IP, UDP, and TCP as needed.
+
+## Debug Output
+
+The application logs every packet processed, including:
+
+- Incoming and outgoing IPs and ports for UDP/TCP
+- ARP request IPs
+- ICMP ping sources
+
+Example logs:
+
+```
+ARP request for 192.168.1.1
+ICMP echo request from 192.168.1.10
+Rx IPv4 UDP 10.0.0.5:1234 → 10.0.0.1:5678
+Tx IPv4 UDP 10.0.0.1:5678 → 10.0.0.5:1234
+```
+
+## License
+
+```
+SPDX-License-Identifier: BSD-3-Clause  
+Copyright(c) 2010-2015 Intel Corporation
+```
+
+## Credits
+
+This project is based on the DPDK examples and extended with packet reflection logic and environmental configuration options.
