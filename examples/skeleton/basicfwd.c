@@ -26,6 +26,7 @@
 #define BURST_SIZE 32
 
 static bool no_swap_ports = false;
+static bool no_swap_ip = false;
 static int use_fixed_src_ip = 0;
 static uint32_t fixed_src_ip = 0;
 static int use_fixed_dst_ip = 0;
@@ -272,11 +273,12 @@ lcore_main(void)
 						src_ip_str, src_port, dst_ip_str, dst_port);
 
 					// Now do all the swapping/modifications
-					swap_ether(eth);
-					uint32_t tmp_ip = ip->src_addr;
-					ip->src_addr = ip->dst_addr;
-					ip->dst_addr = tmp_ip;
-
+					if (!no_swap_ip) {
+						swap_ether(eth);
+						uint32_t tmp_ip = ip->src_addr;
+						ip->src_addr = ip->dst_addr;
+						ip->dst_addr = tmp_ip;
+					}
 					if (use_fixed_src_ip) {
 						ip->src_addr = fixed_src_ip;
 					} 
@@ -384,6 +386,7 @@ static void print_welcome_message(void)
     printf("Configuration via Environment Variables:\n");
     printf("----------------------------------------\n");
     printf("NO_SWAP_PORTS=1    - Disable port swapping (keep original ports)\n");
+    printf("NO_SWAP_IPS=1      - Disable IPs swapping (keep original IPs)\n");
     printf("FIX_SRC_IP=x.x.x.x - Use fixed source IP address\n");
     printf("FIX_DST_IP=x.x.x.x - Use fixed destination IP address\n");
     printf("FIX_SRC_PORT=N     - Use fixed source port (1-65535)\n");
@@ -456,6 +459,11 @@ main(int argc, char *argv[])
 		no_swap_ports = true;
 		printf("\nNOTICE: No Ports swaping mode is active.\n");
 	}
+	env = getenv("NO_SWAP_IPS");
+	if (env && strcmp(env, "1") == 0){
+		no_swap_ip = true;
+		printf("\nNOTICE: No IPs swaping mode is active.\n");
+	}
 	/* Check for static ip source configuration*/
 	env = NULL;
 	env = getenv("FIX_SRC_IP");
@@ -497,7 +505,6 @@ main(int argc, char *argv[])
             exit(1);
         }
     }
-
 
 	/* Call lcore_main on the main core only. Called on single lcore. 8< */
 	lcore_main();
