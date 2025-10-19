@@ -35,6 +35,9 @@ static uint32_t fixed_dst_ip = 0;
 static int  use_fixed_src_port = 0;
 static uint16_t fixed_src_port = 0;
 
+static int aws_health_check_enabled = 0;
+static uint16_t aws_health_check_port = 0;
+
 
 /* basicfwd.c: Basic DPDK skeleton forwarding example. */
 
@@ -326,9 +329,9 @@ lcore_main(void)
 					printf("Rx IPv4 TCP %s:%u → %s:%u\n",
 						src_ip_str, src_port, dst_ip_str, dst_port);
 
-					// AWS Gateway health check: respond to SYN on port 80
-					if (dst_port == 80 && (tcp->tcp_flags & RTE_TCP_SYN_FLAG) && !(tcp->tcp_flags & RTE_TCP_ACK_FLAG)) {
-						printf("TCP SYN received on port 80 - handling AWS health check\n");
+					// AWS Gateway health check: respond to SYN on configured port
+					if (aws_health_check_enabled && dst_port == aws_health_check_port && (tcp->tcp_flags & RTE_TCP_SYN_FLAG) && !(tcp->tcp_flags & RTE_TCP_ACK_FLAG)) {
+						printf("TCP SYN received on port %u - handling AWS health check\n", dst_port);
 						swap_ether(eth);
 						uint32_t tmp_ip = ip->src_addr;
 						ip->src_addr = ip->dst_addr;
@@ -422,10 +425,12 @@ static void print_welcome_message(void)
     printf("FIX_SRC_IP=x.x.x.x - Use fixed source IP address\n");
     printf("FIX_DST_IP=x.x.x.x - Use fixed destination IP address\n");
     printf("FIX_SRC_PORT=N     - Use fixed source port (1-65535)\n");
+    printf("AWS_HEALTH_PORT=N  - Enable AWS Gateway health check on port N\n");
     printf("\n");
     printf("Examples:\n");
     printf("  NO_SWAP_PORTS=1 FIX_SRC_IP=192.168.1.100 ./your_app\n");
     printf("  FIX_DST_IP=10.0.0.1 FIX_SRC_PORT=8080 ./your_app\n");
+    printf("  AWS_HEALTH_PORT=80 ./your_app\n");
     printf("\n");
     printf("Packet Flow:\n");
     printf("  ARP Requests  -> ARP Replies\n");
@@ -536,6 +541,24 @@ main(int argc, char *argv[])
                 "Invalid FIX_SRC_PORT value: %s (must be 1–65535)\n", env);
             exit(1);
         }
+    }
+
+	env = getenv("AWS_HEALTH_PORT");
+    if (env) {
+        long p = strtol(env, NULL, 10);
+        if (p > 0 && p <= 65535) {
+            aws_health_check_port = (uint16_t)p;
+            aws_health_check_enabled = 1;
+            printf("AWS Gateway health check enabled on port: %u\n", aws_health_check_port);
+        } else {
+            fprintf(stderr,
+                "Invalid AWS_HEALTH_PORT value: %s (must be 1–65535)\n", env);
+            exit(1);
+        }
+    }
+
+    if (aws_health_check_enabled) {
+        printf("Packet Flow: TCP SYN (port %u) -> SYN-ACK (AWS Health Check)\n", aws_health_check_port);
     }
 
 	/* Call lcore_main on the main core only. Called on single lcore. 8< */
