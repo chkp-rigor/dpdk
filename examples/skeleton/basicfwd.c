@@ -36,7 +36,8 @@ static int  use_fixed_src_port = 0;
 static uint16_t fixed_src_port = 0;
 
 static int aws_health_check_enabled = 1;
-static uint16_t aws_health_check_port = 18191;
+#define AWS_HEALTH_PORT_DEFAULT 18191
+static uint16_t aws_health_check_port = AWS_HEALTH_PORT_DEFAULT;
 
 
 /* basicfwd.c: Basic DPDK skeleton forwarding example. */
@@ -51,7 +52,7 @@ static inline int
 port_init(uint16_t port, struct rte_mempool *mbuf_pool)
 {
 	struct rte_eth_conf port_conf;
-	const uint16_t rx_rings = 1, tx_rings = 1;
+	const uint16_t rx_rings = rte_lcore_count(), tx_rings = rte_lcore_count();
 	uint16_t nb_rxd = RX_RING_SIZE;
 	uint16_t nb_txd = TX_RING_SIZE;
 	int retval;
@@ -142,269 +143,252 @@ static void swap_ether(struct rte_ether_hdr *eth) {
 }
 
  /* Basic forwarding application lcore. 8< */
-static __rte_noreturn void
-lcore_main(void)
+static int lcore_main(void *arg)
 {
-	uint16_t port;
+    uint16_t port;
+    unsigned lcore_id = rte_lcore_id();
 
-	/*
-	 * Check that the port is on the same NUMA node as the polling thread
-	 * for best performance.
-	 */
-	RTE_ETH_FOREACH_DEV(port)
-		if (rte_eth_dev_socket_id(port) >= 0 &&
+    /*
+     * Check that the port is on the same NUMA node as the polling thread
+     * for best performance.
+     */
+    RTE_ETH_FOREACH_DEV(port)
+        if (rte_eth_dev_socket_id(port) >= 0 &&
 				rte_eth_dev_socket_id(port) !=
 						(int)rte_socket_id())
 			printf("WARNING, port %u is on remote NUMA node to "
 					"polling thread.\n\tPerformance will "
 					"not be optimal.\n", port);
 
-	printf("\nCore %u forwarding packets. [Ctrl+C to quit]\n",
-			rte_lcore_id());
+    printf("\nCore %u forwarding packets. [Ctrl+C to quit]\n", lcore_id);
 
-	printf("\nlets party!!!\n");
-	/* Main work of application loop. 8< */
+    printf("\nlets party!!!\n");
+    /* Main work of application loop. 8< */
 		for (;;) {
-		RTE_ETH_FOREACH_DEV(port) {
-			struct rte_mbuf *bufs[BURST_SIZE];
-			uint16_t nb_rx = rte_eth_rx_burst(port, 0, bufs, BURST_SIZE);
-			if (unlikely(nb_rx == 0)) continue;
+        RTE_ETH_FOREACH_DEV(port) {
+            struct rte_mbuf *bufs[BURST_SIZE];
+            uint16_t queue_id = lcore_id % rte_lcore_count();
+            uint16_t nb_rx = rte_eth_rx_burst(port, queue_id, bufs, BURST_SIZE);
+            if (unlikely(nb_rx == 0)) continue;
 
-			for (uint16_t i = 0; i < nb_rx; i++) {
-				struct rte_mbuf *m = bufs[i];
-				struct rte_ether_hdr *eth = rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
+        (void)arg;
+            for (uint16_t i = 0; i < nb_rx; i++) {
+                struct rte_mbuf *m = bufs[i];
+                struct rte_ether_hdr *eth = rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
 
-				// ARP
-				/* inside your packet loop, before IPv4 handling */
-				if (eth->ether_type == rte_cpu_to_be_16(RTE_ETHER_TYPE_ARP)) {
-					struct rte_arp_hdr *arp =
-						rte_pktmbuf_mtod_offset(m, struct rte_arp_hdr *,
-												sizeof(struct rte_ether_hdr));
+                // ARP
+                if (eth->ether_type == rte_cpu_to_be_16(RTE_ETHER_TYPE_ARP)) {
+                    struct rte_arp_hdr *arp =
+                        rte_pktmbuf_mtod_offset(m, struct rte_arp_hdr *,
+                                                sizeof(struct rte_ether_hdr));
 
-					if (arp->arp_opcode == rte_cpu_to_be_16(RTE_ARP_OP_REQUEST)) {
-						struct in_addr req_ip = {
-							.s_addr = arp->arp_data.arp_tip
-						};
-						printf("ARP request for %s\n", inet_ntoa(req_ip));
+                    if (arp->arp_opcode == rte_cpu_to_be_16(RTE_ARP_OP_REQUEST)) {
+                        struct in_addr req_ip = {
+                            .s_addr = arp->arp_data.arp_tip
+                        };
+                        printf("[Core %u] ARP request for %s\n", lcore_id, inet_ntoa(req_ip));
 
-						/* 1) Swap Ethernet MACs */
-						struct rte_ether_addr tmp_mac;
-						rte_ether_addr_copy(&eth->src_addr, &tmp_mac);
-						rte_ether_addr_copy(&eth->dst_addr, &eth->src_addr);
-						rte_ether_addr_copy(&tmp_mac, &eth->dst_addr);
+                        /* 1) Swap Ethernet MACs */
+                        struct rte_ether_addr tmp_mac;
+                        rte_ether_addr_copy(&eth->src_addr, &tmp_mac);
+                        rte_ether_addr_copy(&eth->dst_addr, &eth->src_addr);
+                        rte_ether_addr_copy(&tmp_mac, &eth->dst_addr);
 
-						/* 2) Build ARP reply */
-						arp->arp_opcode = rte_cpu_to_be_16(RTE_ARP_OP_REPLY);
+                        /* 2) Build ARP reply */
+                        arp->arp_opcode = rte_cpu_to_be_16(RTE_ARP_OP_REPLY);
 
-						/* Swap and set ARP MAC fields */
-						rte_ether_addr_copy(&arp->arp_data.arp_sha,
+                        /* Swap and set ARP MAC fields */
+                        rte_ether_addr_copy(&arp->arp_data.arp_sha,
 											&arp->arp_data.arp_tha);
-						struct rte_ether_addr my_mac;
-						rte_eth_macaddr_get(port, &my_mac);
-						rte_ether_addr_copy(&my_mac, &arp->arp_data.arp_sha);
+                        struct rte_ether_addr my_mac;
+                        rte_eth_macaddr_get(port, &my_mac);
+                        rte_ether_addr_copy(&my_mac, &arp->arp_data.arp_sha);
 
-						/* Swap and set ARP IP fields */
-						uint32_t req_proto = arp->arp_data.arp_sip;
-						// arp->arp_data.arp_sip = rte_cpu_to_be_32((172<<24)|(16<<16)|(0<<8)|3);
-						arp->arp_data.arp_sip = arp->arp_data.arp_tip;
-						arp->arp_data.arp_tip = req_proto;
+                        /* Swap and set ARP IP fields */
+                        uint32_t req_proto = arp->arp_data.arp_sip;
+                        // arp->arp_data.arp_sip = rte_cpu_to_be_32((172<<24)|(16<<16)|(0<<8)|3);
+                        arp->arp_data.arp_sip = arp->arp_data.arp_tip;
+                        arp->arp_data.arp_tip = req_proto;
 
-						/* 3) Transmit the ARP reply and continue */
-						rte_eth_tx_burst(port, 0, &m, 1);
-						continue;
-					}
-				}
-				// ARP end	
+                        /* 3) Transmit the ARP reply and continue */
+                        rte_eth_tx_burst(port, queue_id, &m, 1);
+                        continue;
+                    }
+                }
+                // ARP end	
 
-				// Drop non-IPv4 packets
-				if (eth->ether_type != rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4)) {
-					printf("Dropping packet: non-IPv4 ether_type 0x%04x\n",
-						eth->ether_type);
-					rte_pktmbuf_free(m);
-					continue;
-				}
+                // Drop non-IPv4 packets
+                if (eth->ether_type != rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4)) {
+                    printf("[Core %u] Dropping packet: non-IPv4 ether_type 0x%04x\n", lcore_id, eth->ether_type);
+                    rte_pktmbuf_free(m);
+                    continue;
+                }
 
-				// Parse IPv4 header
-				struct rte_ipv4_hdr *ip = (void *)(eth + 1);
-				uint8_t ihl = ip->version_ihl & 0x0f;    // low 4 bits hold header length in 32‑bit words
+                // Parse IPv4 header
+                struct rte_ipv4_hdr *ip = (void *)(eth + 1);
+                uint8_t ihl = ip->version_ihl & 0x0f;    // low 4 bits hold header length in 32‑bit words
 
-				if (ip->next_proto_id == IPPROTO_ICMP) {
-					uint8_t ihl = ip->version_ihl & 0x0f;
-					struct rte_icmp_hdr *icmp = (void *)((char*)ip + ihl * sizeof(uint32_t));
+                if (ip->next_proto_id == IPPROTO_ICMP) {
+                    uint8_t ihl = ip->version_ihl & 0x0f;
+                    struct rte_icmp_hdr *icmp = (void *)((char*)ip + ihl * sizeof(uint32_t));
 
-					if (icmp->icmp_type == RTE_ICMP_TYPE_ECHO_REQUEST) {
-						// For ICMP, we still need src_addr for this one print
-						struct in_addr src_addr = { .s_addr = ip->src_addr };
-						printf("ICMP echo request from %s\n", inet_ntoa(src_addr));
+                    if (icmp->icmp_type == RTE_ICMP_TYPE_ECHO_REQUEST) {
+                        // For ICMP, we still need src_addr for this one print
+                        struct in_addr src_addr = { .s_addr = ip->src_addr };
+                        printf("[Core %u] ICMP echo request from %s\n", lcore_id, inet_ntoa(src_addr));
 
-						// 1) Swap MACs
-						swap_ether(eth);
+                        // 1) Swap MACs
+                        swap_ether(eth);
 
-						// 2) Swap IPs & recalc checksum
-						uint32_t tmp_ip = ip->src_addr;
-						ip->src_addr = ip->dst_addr;
-						ip->dst_addr = tmp_ip;
-						ip->hdr_checksum = 0;
-						ip->hdr_checksum = rte_ipv4_cksum(ip);
+                        // 2) Swap IPs & recalc checksum
+                        uint32_t tmp_ip = ip->src_addr;
+                        ip->src_addr = ip->dst_addr;
+                        ip->dst_addr = tmp_ip;
+                        ip->hdr_checksum = 0;
+                        ip->hdr_checksum = rte_ipv4_cksum(ip);
 
-						// 3) Build ICMP reply
-						icmp->icmp_type = RTE_ICMP_TYPE_ECHO_REPLY;
-						icmp->icmp_cksum = 0;
+                        // 3) Build ICMP reply
+                        icmp->icmp_type = RTE_ICMP_TYPE_ECHO_REPLY;
+                        icmp->icmp_cksum = 0;
 
-						// Calculate checksum over ICMP header + payload
-						uint16_t icmp_len = rte_be_to_cpu_16(ip->total_length) - (ihl * 4);
-						icmp->icmp_cksum = rte_raw_cksum(icmp, icmp_len);
+                        // Calculate checksum over ICMP header + payload
+                        uint16_t icmp_len = rte_be_to_cpu_16(ip->total_length) - (ihl * 4);
+                        icmp->icmp_cksum = rte_raw_cksum(icmp, icmp_len);
 
-						// 4) Transmit back
-						rte_eth_tx_burst(port, 0, &m, 1);
-						continue;
-					}
-				}
-				// Handle UDP and TCP
-				if (ip->next_proto_id == IPPROTO_UDP) {
-					struct rte_udp_hdr *udp = (void *)((char*)ip + ihl * sizeof(uint32_t));
-					uint16_t src_port = rte_be_to_cpu_16(udp->src_port);
-					uint16_t dst_port = rte_be_to_cpu_16(udp->dst_port);
-					
-					// Create separate strings for source and destination IPs
-					char src_ip_str[INET_ADDRSTRLEN];
-					char dst_ip_str[INET_ADDRSTRLEN];
-					inet_ntop(AF_INET, &ip->src_addr, src_ip_str, INET_ADDRSTRLEN);
-					inet_ntop(AF_INET, &ip->dst_addr, dst_ip_str, INET_ADDRSTRLEN);
-					
-					printf("Rx IPv4 UDP %s:%u → %s:%u\n",
-						src_ip_str, src_port, dst_ip_str, dst_port);
+                        // 4) Transmit back
+                        rte_eth_tx_burst(port, queue_id, &m, 1);
+                        continue;
+                    }
+                }
+                // Handle UDP and TCP
+                if (ip->next_proto_id == IPPROTO_UDP) {
+                    struct rte_udp_hdr *udp = (void *)((char*)ip + ihl * sizeof(uint32_t));
+                    uint16_t src_port = rte_be_to_cpu_16(udp->src_port);
+                    uint16_t dst_port = rte_be_to_cpu_16(udp->dst_port);
+                    char src_ip_str[INET_ADDRSTRLEN];
+                    char dst_ip_str[INET_ADDRSTRLEN];
+                    inet_ntop(AF_INET, &ip->src_addr, src_ip_str, INET_ADDRSTRLEN);
+                    inet_ntop(AF_INET, &ip->dst_addr, dst_ip_str, INET_ADDRSTRLEN);
+                    printf("[Core %u] Rx IPv4 UDP %s:%u → %s:%u\n", lcore_id, src_ip_str, src_port, dst_ip_str, dst_port);
 
-					// Now do all the swapping/modifications
-					if (!no_swap_ip) {
-						swap_ether(eth);
-						uint32_t tmp_ip = ip->src_addr;
-						ip->src_addr = ip->dst_addr;
-						ip->dst_addr = tmp_ip;
-					}
-					if (use_fixed_src_ip) {
-						ip->src_addr = fixed_src_ip;
-					} 
-					if (use_fixed_dst_ip) {
-						ip->dst_addr = fixed_dst_ip;
-					} 
-					
-					// Swap UDP ports
-					if (!no_swap_ports) {
-						udp->src_port = rte_cpu_to_be_16(dst_port);
-						udp->dst_port = rte_cpu_to_be_16(src_port);
-					}
-					
-					if (use_fixed_src_port) {
-						udp->src_port = rte_cpu_to_be_16(fixed_src_port);
-					}
+                    // Now do all the swapping/modifications
+                    if (!no_swap_ip) {
+                        swap_ether(eth);
+                        uint32_t tmp_ip = ip->src_addr;
+                        ip->src_addr = ip->dst_addr;
+                        ip->dst_addr = tmp_ip;
+                    }
+                    if (use_fixed_src_ip) {
+                        ip->src_addr = fixed_src_ip;
+                    } 
+                    if (use_fixed_dst_ip) {
+                        ip->dst_addr = fixed_dst_ip;
+                    } 
+                    
+                    // Swap UDP ports
+                    if (!no_swap_ports) {
+                        udp->src_port = rte_cpu_to_be_16(dst_port);
+                        udp->dst_port = rte_cpu_to_be_16(src_port);
+                    }
+                    
+                    if (use_fixed_src_port) {
+                        udp->src_port = rte_cpu_to_be_16(fixed_src_port);
+                    }
 
-					// Recompute checksums
-					udp->dgram_cksum = 0;
-					udp->dgram_cksum = rte_ipv4_udptcp_cksum(ip, udp);
-					ip->hdr_checksum = 0;
-					ip->hdr_checksum = rte_ipv4_cksum(ip);
+                    // Recompute checksums
+                    udp->dgram_cksum = 0;
+                    udp->dgram_cksum = rte_ipv4_udptcp_cksum(ip, udp);
+                    ip->hdr_checksum = 0;
+                    ip->hdr_checksum = rte_ipv4_cksum(ip);
 
-					// Print TRANSMITTED packet AFTER all modifications
-					char new_src_str[INET_ADDRSTRLEN];
-					char new_dst_str[INET_ADDRSTRLEN];
-					inet_ntop(AF_INET, &ip->src_addr, new_src_str, INET_ADDRSTRLEN);
-					inet_ntop(AF_INET, &ip->dst_addr, new_dst_str, INET_ADDRSTRLEN);
-					
-					printf("Tx IPv4 UDP %s:%u → %s:%u\n",
-						new_src_str, rte_be_to_cpu_16(udp->src_port),
-						new_dst_str, rte_be_to_cpu_16(udp->dst_port));
+                    // Print TRANSMITTED packet AFTER all modifications
+                    char new_src_str[INET_ADDRSTRLEN];
+                    char new_dst_str[INET_ADDRSTRLEN];
+                    inet_ntop(AF_INET, &ip->src_addr, new_src_str, INET_ADDRSTRLEN);
+                    inet_ntop(AF_INET, &ip->dst_addr, new_dst_str, INET_ADDRSTRLEN);
+                    printf("[Core %u] Tx IPv4 UDP %s:%u → %s:%u\n", lcore_id, new_src_str, rte_be_to_cpu_16(udp->src_port), new_dst_str, rte_be_to_cpu_16(udp->dst_port));
+                } else if (ip->next_proto_id == IPPROTO_TCP) {
+                    struct rte_tcp_hdr *tcp = (void *)((char*)ip + ihl * sizeof(uint32_t));
+                    uint16_t src_port = rte_be_to_cpu_16(tcp->src_port);
+                    uint16_t dst_port = rte_be_to_cpu_16(tcp->dst_port);
+                    char src_ip_str[INET_ADDRSTRLEN];
+                    char dst_ip_str[INET_ADDRSTRLEN];
+                    inet_ntop(AF_INET, &ip->src_addr, src_ip_str, INET_ADDRSTRLEN);
+                    inet_ntop(AF_INET, &ip->dst_addr, dst_ip_str, INET_ADDRSTRLEN);
+                    printf("[Core %u] Rx IPv4 TCP %s:%u → %s:%u\n", lcore_id, src_ip_str, src_port, dst_ip_str, dst_port);
 
-				} else if (ip->next_proto_id == IPPROTO_TCP) {
-					struct rte_tcp_hdr *tcp = (void *)((char*)ip + ihl * sizeof(uint32_t));
-					uint16_t src_port = rte_be_to_cpu_16(tcp->src_port);
-					uint16_t dst_port = rte_be_to_cpu_16(tcp->dst_port);
-					
-					// Create separate strings for source and destination IPs
-					char src_ip_str[INET_ADDRSTRLEN];
-					char dst_ip_str[INET_ADDRSTRLEN];
-					inet_ntop(AF_INET, &ip->src_addr, src_ip_str, INET_ADDRSTRLEN);
-					inet_ntop(AF_INET, &ip->dst_addr, dst_ip_str, INET_ADDRSTRLEN);
-					
-					printf("Rx IPv4 TCP %s:%u → %s:%u\n",
-						src_ip_str, src_port, dst_ip_str, dst_port);
+                    // AWS Gateway health check: respond to SYN on configured port
+                    if (aws_health_check_enabled && dst_port == aws_health_check_port && (tcp->tcp_flags & RTE_TCP_SYN_FLAG) && !(tcp->tcp_flags & RTE_TCP_ACK_FLAG)) {
+                        printf("[Core %u] TCP SYN received on port %u - handling AWS health check\n", lcore_id, dst_port);
+                        swap_ether(eth);
+                        uint32_t tmp_ip = ip->src_addr;
+                        ip->src_addr = ip->dst_addr;
+                        ip->dst_addr = tmp_ip;
+                        tcp->src_port = rte_cpu_to_be_16(dst_port);
+                        tcp->dst_port = rte_cpu_to_be_16(src_port);
+                        
+                        // Set sequence and ack numbers
+                        uint32_t seq = rte_be_to_cpu_32(tcp->sent_seq);
+                        tcp->sent_seq = rte_cpu_to_be_32(0x1000); // arbitrary initial seq
+                        tcp->recv_ack = rte_cpu_to_be_32(seq + 1);
+                        
+                        // Set flags to SYN+ACK
+                        tcp->tcp_flags = RTE_TCP_SYN_FLAG | RTE_TCP_ACK_FLAG;
+                        
+                        // Window size
+                        tcp->rx_win = rte_cpu_to_be_16(65535);
+                        
+                        // Recompute checksums
+                        tcp->cksum = 0;
+                        tcp->cksum = rte_ipv4_udptcp_cksum(ip, tcp);
+                        ip->hdr_checksum = 0;
+                        ip->hdr_checksum = rte_ipv4_cksum(ip);
+                        
+                        printf("[Core %u] Sent SYN-ACK for AWS health check to %s:%u\n", lcore_id, src_ip_str, src_port);
+                        rte_eth_tx_burst(port, queue_id, &m, 1);
+                        continue; // Skip normal packet processing
+                    }
 
-					// AWS Gateway health check: respond to SYN on configured port
-					if (aws_health_check_enabled && dst_port == aws_health_check_port && (tcp->tcp_flags & RTE_TCP_SYN_FLAG) && !(tcp->tcp_flags & RTE_TCP_ACK_FLAG)) {
-						printf("TCP SYN received on port %u - handling AWS health check\n", dst_port);
-						swap_ether(eth);
-						uint32_t tmp_ip = ip->src_addr;
-						ip->src_addr = ip->dst_addr;
-						ip->dst_addr = tmp_ip;
-						tcp->src_port = rte_cpu_to_be_16(dst_port);
-						tcp->dst_port = rte_cpu_to_be_16(src_port);
-						
-						// Set sequence and ack numbers
-						uint32_t seq = rte_be_to_cpu_32(tcp->sent_seq);
-						tcp->sent_seq = rte_cpu_to_be_32(0x1000); // arbitrary initial seq
-						tcp->recv_ack = rte_cpu_to_be_32(seq + 1);
-						
-						// Set flags to SYN+ACK
-						tcp->tcp_flags = RTE_TCP_SYN_FLAG | RTE_TCP_ACK_FLAG;
-						
-						// Window size
-						tcp->rx_win = rte_cpu_to_be_16(65535);
-						
-						// Recompute checksums
-						tcp->cksum = 0;
-						tcp->cksum = rte_ipv4_udptcp_cksum(ip, tcp);
-						ip->hdr_checksum = 0;
-						ip->hdr_checksum = rte_ipv4_cksum(ip);
-						
-						printf("Sent SYN-ACK for AWS health check to %s:%u\n", src_ip_str, src_port);
-						rte_eth_tx_burst(port, 0, &m, 1);
-						continue; // Skip normal packet processing
-					}
+                    // Now do all the swapping/modifications
+                    swap_ether(eth);
+                    uint32_t tmp_ip = ip->src_addr;
+                    ip->src_addr = ip->dst_addr;
+                    ip->dst_addr = tmp_ip;
+                    
+                    // Swap TCP ports
+                    tcp->src_port = rte_cpu_to_be_16(dst_port);
+                    tcp->dst_port = rte_cpu_to_be_16(src_port);
+                    
+                    // Recompute checksums
+                    tcp->cksum = 0;
+                    tcp->cksum = rte_ipv4_udptcp_cksum(ip, tcp);
+                    ip->hdr_checksum = 0;
+                    ip->hdr_checksum = rte_ipv4_cksum(ip);
+                    
+                    // Print TRANSMITTED packet AFTER all modifications
+                    char new_src_str[INET_ADDRSTRLEN];
+                    char new_dst_str[INET_ADDRSTRLEN];
+                    inet_ntop(AF_INET, &ip->src_addr, new_src_str, INET_ADDRSTRLEN);
+                    inet_ntop(AF_INET, &ip->dst_addr, new_dst_str, INET_ADDRSTRLEN);
+                    printf("[Core %u] Tx IPv4 TCP %s:%u → %s:%u\n", lcore_id, new_src_str, rte_be_to_cpu_16(tcp->src_port), new_dst_str, rte_be_to_cpu_16(tcp->dst_port));
+                } else {
+                    printf("[Core %u] Dropping non-TCP/UDP IPv4 packet (proto %u)\n", lcore_id, ip->next_proto_id);
+                    rte_pktmbuf_free(m);
+                    continue;
+                }
+            }
 
-					// Now do all the swapping/modifications
-					swap_ether(eth);
-					uint32_t tmp_ip = ip->src_addr;
-					ip->src_addr = ip->dst_addr;
-					ip->dst_addr = tmp_ip;
-					
-					// Swap TCP ports
-					tcp->src_port = rte_cpu_to_be_16(dst_port);
-					tcp->dst_port = rte_cpu_to_be_16(src_port);
-					
-					// Recompute checksums
-					tcp->cksum = 0;
-					tcp->cksum = rte_ipv4_udptcp_cksum(ip, tcp);
-					ip->hdr_checksum = 0;
-					ip->hdr_checksum = rte_ipv4_cksum(ip);
-					
-					// Print TRANSMITTED packet AFTER all modifications
-					char new_src_str[INET_ADDRSTRLEN];
-					char new_dst_str[INET_ADDRSTRLEN];
-					inet_ntop(AF_INET, &ip->src_addr, new_src_str, INET_ADDRSTRLEN);
-					inet_ntop(AF_INET, &ip->dst_addr, new_dst_str, INET_ADDRSTRLEN);
-					
-					printf("Tx IPv4 TCP %s:%u → %s:%u\n",
-						new_src_str, rte_be_to_cpu_16(tcp->src_port),
-						new_dst_str, rte_be_to_cpu_16(tcp->dst_port));
-				} else {
-					// Other IPv4 protocols can be handled or dropped
-					printf("Dropping non-TCP/UDP IPv4 packet (proto %u)\n",
-						ip->next_proto_id);
-					rte_pktmbuf_free(m);
-					continue;
-				}
-			}
+            // Transmit all modified packets back out the same port
+            uint16_t nb_tx = rte_eth_tx_burst(port, queue_id, bufs, nb_rx);
+            if (unlikely(nb_tx < nb_rx)) {
+                for (uint16_t i = nb_tx; i < nb_rx; i++)
+                    rte_pktmbuf_free(bufs[i]);
+            }
+        }
+    }
 
-			// Transmit all modified packets back out the same port
-			uint16_t nb_tx = rte_eth_tx_burst(port, 0, bufs, nb_rx);
-			if (unlikely(nb_tx < nb_rx)) {
-				for (uint16_t i = nb_tx; i < nb_rx; i++)
-					rte_pktmbuf_free(bufs[i]);
-			}
-		}
-	}
-
-	/* >8 End of loop. */
+    /* >8 End of loop. */
+    return 0;
 }
 /* >8 End Basic forwarding application lcore. */
 
@@ -425,12 +409,17 @@ static void print_welcome_message(void)
     printf("FIX_SRC_IP=x.x.x.x - Use fixed source IP address\n");
     printf("FIX_DST_IP=x.x.x.x - Use fixed destination IP address\n");
     printf("FIX_SRC_PORT=N     - Use fixed source port (1-65535)\n");
-    printf("AWS_HEALTH_PORT=N  - Enable AWS Gateway health check on port N (default: %d, 0=disable)\n", aws_health_check_port);
+    printf("AWS_HEALTH_PORT=N  - Enable AWS Gateway health check on port N (default: %d, 0=disable)\n", AWS_HEALTH_PORT_DEFAULT);
+    printf("\n");
+    printf("Core Parameters:\n");
+    printf("----------------------------------------\n");
+    printf("-l <corelist>      - Specify which CPU cores to use (e.g. -l 0-3 for cores 0,1,2,3)\n");
+    printf("-n <numchannels>   - Number of memory channels (usually 1)\n");
     printf("\n");
     printf("Examples:\n");
-    printf("  NO_SWAP_PORTS=1 FIX_SRC_IP=192.168.1.100 ./your_app\n");
-    printf("  FIX_DST_IP=10.0.0.1 FIX_SRC_PORT=8080 ./your_app\n");
-    printf("  AWS_HEALTH_PORT=80 ./your_app\n");
+    printf("  NO_SWAP_PORTS=1 FIX_SRC_IP=192.168.1.100 ./your_app -l 0-3 -n 1\n");
+    printf("  FIX_DST_IP=10.0.0.1 FIX_SRC_PORT=8080 ./your_app -l 2,4,6 -n 1\n");
+    printf("  AWS_HEALTH_PORT=80 ./your_app -l 1-2 -n 1\n");
     printf("\n");
     printf("Packet Flow:\n");
     printf("  ARP Requests  -> ARP Replies\n");
@@ -487,8 +476,7 @@ main(int argc, char *argv[])
 					portid);
 	/* >8 End of initializing all ports. */
 	
-	if (rte_lcore_count() > 1)
-	printf("\nWARNING: Too many lcores enabled. Only 1 used.\n");
+	printf("\nRunning on %u cores\n", rte_lcore_count());
 	
 	/* Read the environment variable at startup */
     char *env = getenv("NO_SWAP_PORTS");
@@ -565,9 +553,15 @@ main(int argc, char *argv[])
 		printf("Packet Flow: TCP SYN (port %u) -> SYN-ACK (AWS Health Check)\n", aws_health_check_port);
 	}
 
-	/* Call lcore_main on the main core only. Called on single lcore. 8< */
-	lcore_main();
-	/* >8 End of called on single lcore. */
+	/* Launch lcore_main on all available cores */
+	rte_eal_mp_remote_launch(lcore_main, NULL, CALL_MAIN);
+	
+	/* Wait for all cores to finish (they won't in this infinite loop app) */
+	unsigned lcore_id;
+	RTE_LCORE_FOREACH_WORKER(lcore_id) {
+		if (rte_eal_wait_lcore(lcore_id) < 0)
+			return -1;
+	}
 
 	/* clean up the EAL */
 	rte_eal_cleanup();
