@@ -38,6 +38,11 @@ static uint16_t fixed_src_port = 0;
 static int aws_health_check_enabled = 1;
 #define AWS_HEALTH_PORT_DEFAULT 18191
 static uint16_t aws_health_check_port = AWS_HEALTH_PORT_DEFAULT;
+/* If set via NO_PRINTING=1 environment variable, suppress per-packet logs */
+static int suppress_packet_logs = 0;
+
+/* Packet logging macro (only for dynamic packet prints) */
+#define PKT_LOG(fmt, ...) do { if (!suppress_packet_logs) printf(fmt, ##__VA_ARGS__); } while (0)
 
 
 /* basicfwd.c: Basic DPDK skeleton forwarding example. */
@@ -186,7 +191,7 @@ static int lcore_main(void *arg)
                         struct in_addr req_ip = {
                             .s_addr = arp->arp_data.arp_tip
                         };
-                        printf("[Core %u] ARP request for %s\n", lcore_id, inet_ntoa(req_ip));
+                        PKT_LOG("[Core %u] ARP request for %s\n", lcore_id, inet_ntoa(req_ip));
 
                         /* 1) Swap Ethernet MACs */
                         struct rte_ether_addr tmp_mac;
@@ -219,7 +224,7 @@ static int lcore_main(void *arg)
 
                 // Drop non-IPv4 packets
                 if (eth->ether_type != rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4)) {
-                    printf("[Core %u] Dropping packet: non-IPv4 ether_type 0x%04x\n", lcore_id, eth->ether_type);
+                    PKT_LOG("[Core %u] Dropping packet: non-IPv4 ether_type 0x%04x\n", lcore_id, eth->ether_type);
                     rte_pktmbuf_free(m);
                     continue;
                 }
@@ -235,7 +240,7 @@ static int lcore_main(void *arg)
                     if (icmp->icmp_type == RTE_ICMP_TYPE_ECHO_REQUEST) {
                         // For ICMP, we still need src_addr for this one print
                         struct in_addr src_addr = { .s_addr = ip->src_addr };
-                        printf("[Core %u] ICMP echo request from %s\n", lcore_id, inet_ntoa(src_addr));
+                        PKT_LOG("[Core %u] ICMP echo request from %s\n", lcore_id, inet_ntoa(src_addr));
 
                         // 1) Swap MACs
                         swap_ether(eth);
@@ -269,7 +274,7 @@ static int lcore_main(void *arg)
                     char dst_ip_str[INET_ADDRSTRLEN];
                     inet_ntop(AF_INET, &ip->src_addr, src_ip_str, INET_ADDRSTRLEN);
                     inet_ntop(AF_INET, &ip->dst_addr, dst_ip_str, INET_ADDRSTRLEN);
-                    printf("[Core %u] Rx IPv4 UDP %s:%u → %s:%u\n", lcore_id, src_ip_str, src_port, dst_ip_str, dst_port);
+                    PKT_LOG("[Core %u] Rx IPv4 UDP %s:%u → %s:%u\n", lcore_id, src_ip_str, src_port, dst_ip_str, dst_port);
 
                     // Now do all the swapping/modifications
                     if (!no_swap_ip) {
@@ -306,7 +311,7 @@ static int lcore_main(void *arg)
                     char new_dst_str[INET_ADDRSTRLEN];
                     inet_ntop(AF_INET, &ip->src_addr, new_src_str, INET_ADDRSTRLEN);
                     inet_ntop(AF_INET, &ip->dst_addr, new_dst_str, INET_ADDRSTRLEN);
-                    printf("[Core %u] Tx IPv4 UDP %s:%u → %s:%u\n", lcore_id, new_src_str, rte_be_to_cpu_16(udp->src_port), new_dst_str, rte_be_to_cpu_16(udp->dst_port));
+                    PKT_LOG("[Core %u] Tx IPv4 UDP %s:%u → %s:%u\n", lcore_id, new_src_str, rte_be_to_cpu_16(udp->src_port), new_dst_str, rte_be_to_cpu_16(udp->dst_port));
                 } else if (ip->next_proto_id == IPPROTO_TCP) {
                     struct rte_tcp_hdr *tcp = (void *)((char*)ip + ihl * sizeof(uint32_t));
                     uint16_t src_port = rte_be_to_cpu_16(tcp->src_port);
@@ -315,11 +320,11 @@ static int lcore_main(void *arg)
                     char dst_ip_str[INET_ADDRSTRLEN];
                     inet_ntop(AF_INET, &ip->src_addr, src_ip_str, INET_ADDRSTRLEN);
                     inet_ntop(AF_INET, &ip->dst_addr, dst_ip_str, INET_ADDRSTRLEN);
-                    printf("[Core %u] Rx IPv4 TCP %s:%u → %s:%u\n", lcore_id, src_ip_str, src_port, dst_ip_str, dst_port);
+                    PKT_LOG("[Core %u] Rx IPv4 TCP %s:%u → %s:%u\n", lcore_id, src_ip_str, src_port, dst_ip_str, dst_port);
 
                     // AWS Gateway health check: respond to SYN on configured port
                     if (aws_health_check_enabled && dst_port == aws_health_check_port && (tcp->tcp_flags & RTE_TCP_SYN_FLAG) && !(tcp->tcp_flags & RTE_TCP_ACK_FLAG)) {
-                        printf("[Core %u] TCP SYN received on port %u - handling AWS health check\n", lcore_id, dst_port);
+                        PKT_LOG("[Core %u] TCP SYN received on port %u - handling AWS health check\n", lcore_id, dst_port);
                         swap_ether(eth);
                         uint32_t tmp_ip = ip->src_addr;
                         ip->src_addr = ip->dst_addr;
@@ -344,7 +349,7 @@ static int lcore_main(void *arg)
                         ip->hdr_checksum = 0;
                         ip->hdr_checksum = rte_ipv4_cksum(ip);
                         
-                        printf("[Core %u] Sent SYN-ACK for AWS health check to %s:%u\n", lcore_id, src_ip_str, src_port);
+                        PKT_LOG("[Core %u] Sent SYN-ACK for AWS health check to %s:%u\n", lcore_id, src_ip_str, src_port);
                         rte_eth_tx_burst(port, queue_id, &m, 1);
                         continue; // Skip normal packet processing
                     }
@@ -370,9 +375,9 @@ static int lcore_main(void *arg)
                     char new_dst_str[INET_ADDRSTRLEN];
                     inet_ntop(AF_INET, &ip->src_addr, new_src_str, INET_ADDRSTRLEN);
                     inet_ntop(AF_INET, &ip->dst_addr, new_dst_str, INET_ADDRSTRLEN);
-                    printf("[Core %u] Tx IPv4 TCP %s:%u → %s:%u\n", lcore_id, new_src_str, rte_be_to_cpu_16(tcp->src_port), new_dst_str, rte_be_to_cpu_16(tcp->dst_port));
+                    PKT_LOG("[Core %u] Tx IPv4 TCP %s:%u → %s:%u\n", lcore_id, new_src_str, rte_be_to_cpu_16(tcp->src_port), new_dst_str, rte_be_to_cpu_16(tcp->dst_port));
                 } else {
-                    printf("[Core %u] Dropping non-TCP/UDP IPv4 packet (proto %u)\n", lcore_id, ip->next_proto_id);
+                    PKT_LOG("[Core %u] Dropping non-TCP/UDP IPv4 packet (proto %u)\n", lcore_id, ip->next_proto_id);
                     rte_pktmbuf_free(m);
                     continue;
                 }
@@ -410,6 +415,7 @@ static void print_welcome_message(void)
     printf("FIX_DST_IP=x.x.x.x - Use fixed destination IP address\n");
     printf("FIX_SRC_PORT=N     - Use fixed source port (1-65535)\n");
     printf("AWS_HEALTH_PORT=N  - Enable AWS Gateway health check on port N (default: %d, 0=disable)\n", AWS_HEALTH_PORT_DEFAULT);
+    printf("NO_PRINTING=1      - Suppress per-packet logging output\n");
     printf("\n");
     printf("Core Parameters:\n");
     printf("----------------------------------------\n");
@@ -548,6 +554,13 @@ main(int argc, char *argv[])
 			printf("AWS Gateway health check enabled on port: %u\n", aws_health_check_port);
 		}
 	}
+
+    /* Check for packet printing suppression */
+    env = getenv("NO_PRINTING");
+    if (env && strcmp(env, "1") == 0) {
+        suppress_packet_logs = 1;
+        printf("NOTICE: Packet printing disabled (NO_PRINTING=1).\n");
+    }
 
 	if (aws_health_check_enabled) {
 		printf("Packet Flow: TCP SYN (port %u) -> SYN-ACK (AWS Health Check)\n", aws_health_check_port);
