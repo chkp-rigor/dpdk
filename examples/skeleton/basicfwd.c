@@ -152,6 +152,8 @@ static int lcore_main(void *arg)
 {
     uint16_t port;
     unsigned lcore_id = rte_lcore_id();
+    static unsigned queue_counter = 0;
+    unsigned my_queue = __atomic_fetch_add(&queue_counter, 1, __ATOMIC_SEQ_CST);
 
     /*
      * Check that the port is on the same NUMA node as the polling thread
@@ -165,15 +167,36 @@ static int lcore_main(void *arg)
 					"polling thread.\n\tPerformance will "
 					"not be optimal.\n", port);
 
-    printf("\nCore %u forwarding packets. [Ctrl+C to quit]\n", lcore_id);
+    printf("\nCore %u forwarding packets using queue %u. [Ctrl+C to quit]\n", lcore_id, my_queue);
 
     printf("\nlets party!!!\n");
+    
+    /* Debug: periodic heartbeat */
+    uint64_t last_print = rte_get_timer_cycles();
+    uint64_t poll_count = 0;
+    uint64_t rx_count = 0;
+    
     /* Main work of application loop. 8< */
 		for (;;) {
         RTE_ETH_FOREACH_DEV(port) {
             struct rte_mbuf *bufs[BURST_SIZE];
-            uint16_t queue_id = lcore_id % rte_lcore_count();
-            uint16_t nb_rx = rte_eth_rx_burst(port, queue_id, bufs, BURST_SIZE);
+            uint16_t nb_rx = rte_eth_rx_burst(port, my_queue, bufs, BURST_SIZE);
+            poll_count++;
+            
+            /* Periodic debug output every 5 seconds */
+            uint64_t now = rte_get_timer_cycles();
+            if (now - last_print > rte_get_timer_hz() * 5) {
+                printf("[Core %u] Polling queue %u on port %u - polls: %lu, rx_bursts: %lu\n", 
+                       lcore_id, my_queue, port, poll_count, rx_count);
+                last_print = now;
+            }
+            
+            if (nb_rx > 0) {
+                rx_count++;
+                printf("[Core %u] *** RECEIVED %u packets on port %u queue %u ***\n", 
+                       lcore_id, nb_rx, port, my_queue);
+            }
+            
             if (unlikely(nb_rx == 0)) continue;
 
         (void)arg;
@@ -216,7 +239,7 @@ static int lcore_main(void *arg)
                         arp->arp_data.arp_tip = req_proto;
 
                         /* 3) Transmit the ARP reply and continue */
-                        rte_eth_tx_burst(port, queue_id, &m, 1);
+                        rte_eth_tx_burst(port, my_queue, &m, 1);
                         continue;
                     }
                 }
@@ -261,7 +284,7 @@ static int lcore_main(void *arg)
                         icmp->icmp_cksum = rte_raw_cksum(icmp, icmp_len);
 
                         // 4) Transmit back
-                        rte_eth_tx_burst(port, queue_id, &m, 1);
+                        rte_eth_tx_burst(port, my_queue, &m, 1);
                         continue;
                     }
                 }
@@ -350,7 +373,7 @@ static int lcore_main(void *arg)
                         ip->hdr_checksum = rte_ipv4_cksum(ip);
                         
                         PKT_LOG("[Core %u] Sent SYN-ACK for AWS health check to %s:%u\n", lcore_id, src_ip_str, src_port);
-                        rte_eth_tx_burst(port, queue_id, &m, 1);
+                        rte_eth_tx_burst(port, my_queue, &m, 1);
                         continue; // Skip normal packet processing
                     }
 
@@ -384,7 +407,7 @@ static int lcore_main(void *arg)
             }
 
             // Transmit all modified packets back out the same port
-            uint16_t nb_tx = rte_eth_tx_burst(port, queue_id, bufs, nb_rx);
+            uint16_t nb_tx = rte_eth_tx_burst(port, my_queue, bufs, nb_rx);
             if (unlikely(nb_tx < nb_rx)) {
                 for (uint16_t i = nb_tx; i < nb_rx; i++)
                     rte_pktmbuf_free(bufs[i]);
