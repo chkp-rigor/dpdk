@@ -170,33 +170,11 @@ static int lcore_main(void *arg)
     printf("\nCore %u forwarding packets using queue %u. [Ctrl+C to quit]\n", lcore_id, my_queue);
 
     printf("\nlets party!!!\n");
-    
-    /* Debug: periodic heartbeat */
-    uint64_t last_print = rte_get_timer_cycles();
-    uint64_t poll_count = 0;
-    uint64_t rx_count = 0;
-    
     /* Main work of application loop. 8< */
 		for (;;) {
         RTE_ETH_FOREACH_DEV(port) {
             struct rte_mbuf *bufs[BURST_SIZE];
             uint16_t nb_rx = rte_eth_rx_burst(port, my_queue, bufs, BURST_SIZE);
-            poll_count++;
-            
-            /* Periodic debug output every 5 seconds */
-            uint64_t now = rte_get_timer_cycles();
-            if (now - last_print > rte_get_timer_hz() * 5) {
-                printf("[Core %u] Polling queue %u on port %u - polls: %lu, rx_bursts: %lu\n", 
-                       lcore_id, my_queue, port, poll_count, rx_count);
-                last_print = now;
-            }
-            
-            if (nb_rx > 0) {
-                rx_count++;
-                printf("[Core %u] *** RECEIVED %u packets on port %u queue %u ***\n", 
-                       lcore_id, nb_rx, port, my_queue);
-            }
-            
             if (unlikely(nb_rx == 0)) continue;
 
         (void)arg;
