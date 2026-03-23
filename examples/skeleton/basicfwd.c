@@ -127,7 +127,7 @@ port_init(uint16_t port, struct rte_mempool *mbuf_pool)
 	/* Enable RX in promiscuous mode for the Ethernet device. */
 	retval = rte_eth_promiscuous_enable(port);
 	/* End of setting RX port in promiscuous mode. */
-	if (retval != 0)
+	if (retval != 0&& retval != -ENOTSUP)
 		return retval;
 
 	return 0;
